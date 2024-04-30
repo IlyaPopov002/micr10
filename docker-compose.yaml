@@ -1,0 +1,196 @@
+version: '3'
+services:
+   postgres-order:
+      image: postgres:latest
+      environment:
+         POSTGRES_DB: microservice_db_order
+         POSTGRES_USER: postgres
+         POSTGRES_PASSWORD: 3572
+         POSTGRES_PORT: 5432
+         POSTGRES_LOG_STATEMENT: all
+         POSTGRES_LOGGING_COLLECTOR: 'on'
+         POSTGRES_LOG_MIN_DURATION_STATEMENT: 500
+         POSTGRES_LOG_MIN_ERROR_STATEMENT: error
+         POSTGRES_LOG_MIN_MESSAGES: notice
+         POSTGRES_LOG_DESTINATION: 'stdout'
+      command: [ "-p", "5432" ]
+      ports:
+         - "5432:5432"
+      volumes:
+         - postgres_data_order:/var/lib/postgresql/data
+      networks:
+         - app
+      labels:
+         logging: "promtail"
+         logging_jobname: "containerlogs"
+
+   postgres-receipt:
+      image: postgres:latest
+      environment:
+         POSTGRES_DB: microservice_db_receipt
+         POSTGRES_USER: postgres
+         POSTGRES_PASSWORD: 3572
+         POSTGRES_PORT: 5433 # Порт базы данных внутри контейнера
+         POSTGRES_LOG_STATEMENT: all
+         POSTGRES_LOGGING_COLLECTOR: 'on'
+         POSTGRES_LOG_MIN_DURATION_STATEMENT: 500
+         POSTGRES_LOG_MIN_ERROR_STATEMENT: error
+         POSTGRES_LOG_MIN_MESSAGES: notice
+         POSTGRES_LOG_DESTINATION: 'stdout'
+      command: [ "-p", "5433" ]
+      ports:
+         - "5433:5433"
+      volumes:
+         - postgres_data_receipt:/var/lib/postgresql/data
+      networks:
+         - app
+      labels:
+         logging: "promtail"
+         logging_jobname: "containerlogs"
+
+#   rabbitmq:
+#      image: "rabbitmq:management"
+#      environment:
+#         RABBITMQ_DEFAULT_USER: guest
+#         RABBITMQ_DEFAULT_PASS: guest
+#      ports:
+#         - "5672:5672"
+#         - "15672:15672"
+#      networks:
+#         - app
+
+   app_order:
+      build:
+         context: ./app_order
+         dockerfile: ./Dockerfile
+      ports:
+         - "80:80"
+      depends_on:
+         - postgres-order
+         #- rabbitmq
+      labels:
+         logging: "promtail"
+         logging_jobname: "containerlogs"
+      networks:
+         - app
+
+   app_receipt:
+      build:
+         context: ./app_receipt
+         dockerfile: ./Dockerfile
+      ports:
+         - "81:81"
+      depends_on:
+         - postgres-receipt
+         #- rabbitmq
+      labels:
+         logging: "promtail"
+         logging_jobname: "containerlogs"
+      networks:
+         - app
+
+   pgadmin:
+      container_name: pgadmin-1
+      image: dpage/pgadmin4
+      environment:
+         PGADMIN_DEFAULT_EMAIL: admin@gmail.ru
+         PGADMIN_DEFAULT_PASSWORD: admin
+      ports:
+         - "5050:80"
+      networks:
+         - app
+
+#   keycloak:
+#      image: quay.io/keycloak/keycloak:23.0.1
+#      volumes:
+#         - ./realm-export.json:/opt/jboss/keycloak/imports/realm-export.json
+#      ports:
+#         - "8080:8080"
+#      environment:
+#         - KEYCLOAK_ADMIN=admin
+#         - KEYCLOAK_ADMIN_PASSWORD=admin
+#      command:
+#         - "start-dev"
+#         - "-Dkeycloak.profile.feature.upload_scripts=enabled"
+#         - "-Dkeycloak.migration.action=import"
+#         - "-Dkeycloak.migration.provider=singleFile"
+#         - "-Dkeycloak.migration.file=/opt/jboss/keycloak/imports/realm-export.json"
+#      networks:
+#         - app
+
+   prometheus:
+      image: prom/prometheus:latest
+      volumes:
+         - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      command:
+         - '--config.file=/etc/prometheus/prometheus.yml'
+      ports:
+         - "9090:9090"
+      networks:
+         - app
+
+   grafana:
+      image: grafana/grafana:latest
+      environment:
+         - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+         - GF_AUTH_ANONYMOUS_ENABLED=true
+         - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      entrypoint:
+         - sh
+         - -euc
+         - |
+           mkdir -p /etc/grafana/provisioning/datasources
+           cat <<EOF > /etc/grafana/provisioning/datasources/ds.yaml
+           apiVersion: 1
+           datasources:
+           - name: Loki
+             type: loki
+             access: proxy
+             orgId: 1
+             url: http://loki:3100
+             basicAuth: false
+             isDefault: true
+             version: 1
+             editable: false
+           EOF
+           /run.sh
+      ports:
+         - "3000:3000"
+      networks:
+         - app
+
+   loki:
+      image: grafana/loki:latest
+      ports:
+         - "3100:3100"
+      command: -config.file=/etc/loki/local-config.yaml
+      networks:
+         - app
+
+   promtail:
+      image: grafana/promtail:latest
+      volumes:
+         - ./config/promtail.yaml:/etc/promtail/docker-config.yaml
+         - /var/lib/docker/containers:/var/lib/docker/containers:ro
+         - /var/run/docker.sock:/var/run/docker.sock
+      command: -config.file=/etc/promtail/docker-config.yaml
+      depends_on:
+         - loki
+      networks:
+         - app
+
+   jaeger:
+      image: jaegertracing/all-in-one:1.38
+      ports:
+         - 5775:5775/udp # accept zipkin.thrift over compact thrift protocol
+         - 6831:6831/udp # accept jaeger.thrift over compact thrift protocol
+         - 6832:6832/udp # accept jaeger.thrift over binary thrift protocol
+         - 5778:5778 # serve configs
+         - 16686:16686 # serve frontend
+         - 14268:14268 # accept jaeger.thrift directly from clients
+
+networks:
+   app: # name: app
+volumes:
+   postgres_data_order:
+   postgres_data_receipt:
